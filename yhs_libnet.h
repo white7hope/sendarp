@@ -1,6 +1,7 @@
 #include <pcap.h>
 #include <stdio.h>
 #include <netinet/in.h>
+#include <stdlib.h>
 #include <arpa/inet.h>
 #include <time.h>
 #include <sys/ioctl.h>
