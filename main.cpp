@@ -1,19 +1,43 @@
 #include "yhs_libnet.h"
 
 #define RPT 3
+#define PROMISC 1
+#define NONPROM 0
 
 int print_devlist();		/* Print list of available network devices */
 int print_netdev(char* dev);	/* Print Network Device Info */
 void callback(u_char *user, const struct pcap_pkthdr *pkthdr, const u_char *packet);
+void getIPMAC(struct mac_addr* mymac, struct in_addr* myip);
 
 int main() {
 
+	int fd, j;
 	char *dev;
 	char errbuf[PCAP_ERRBUF_SIZE];
+	u_int8_t mymac[ETHER_ADDR_LEN];
+	struct in_addr myip;
 	struct bpf_program fp;
+	struct libnet_ether_addr *mac_addr;
+
 	bpf_u_int32 netp, maskp;
 	pcap_t *handle;
 
+	/*libnet_t *l;
+	l=libnet_init(LIBNET_RAW4, NULL, errbuf);
+	mac_addr = libnet_get_hwaddr(l); 
+printf("MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n",\
+        mac_addr->ether_addr_octet[0],\
+        mac_addr->ether_addr_octet[1],\
+        mac_addr->ether_addr_octet[2],\
+        mac_addr->ether_addr_octet[3],\
+        mac_addr->ether_addr_octet[4],\
+        mac_addr->ether_addr_octet[5]);
+	/*getIPMAC(&s_mymac, &myip);
+	mymac = s_mymac.maddr;
+
+	printf("%s\n", inet_ntoa(myip));
+	printf("%d\n", sizeof(mymac));
+	printf("%02x %02x %02x %02x %02x %02x\n", mymac[0], mymac[1], mymac[2], mymac[3], mymac[4], mymac[5]);*/
 	char filter_exp[] = "port 80";	/* *** FILTERING RULE *** */
 
 	if((dev = pcap_lookupdev(errbuf)) == NULL){
@@ -26,9 +50,9 @@ int main() {
 	}
 
 	//if(print_devlist()) 	return -1;
-	if(print_netdev(dev)) 	return -1;
+	//if(print_netdev(dev)) 	return -1;
 	
-	handle = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf);
+	handle = pcap_open_live(dev, BUFSIZ, NONPROM, 1000, errbuf);
 	if (handle == NULL) {
 		fprintf(stderr, "Couldn't open device %s: %s\n", dev, errbuf);
 		return -1;
@@ -46,9 +70,27 @@ int main() {
 		return -1;
 	}
 	
+	
 	pcap_loop(handle, RPT, callback, NULL);
 
 	return 0;
+}
+
+void getIPMAC(u_int8_t* mymac, struct in_addr *myip){
+	
+	int fd;
+	struct ifreq ifr;
+
+	fd = socket(PF_INET, SOCK_DGRAM, 0);
+	ifr.ifr_addr.sa_family = AF_INET;
+	strncpy(ifr.ifr_name, "eth0", IFNAMSIZ-1);
+	ioctl(fd, SIOCGIFADDR, &ifr);
+	*myip = ((struct sockaddr_in*)&ifr.ifr_addr)->sin_addr;
+	ioctl(fd, SIOCGIFHWADDR, &ifr);
+	mymac = (unsigned char*) ifr.ifr_hwaddr.sa_data;
+
+	close(fd);
+
 }
 
 void callback(u_char *user, const struct pcap_pkthdr *hdr, const u_char *packet){
@@ -59,6 +101,7 @@ void callback(u_char *user, const struct pcap_pkthdr *hdr, const u_char *packet)
 	const struct libnet_ipv4_hdr *ip;
 	const struct libnet_tcp_hdr *tcp;
 	const char *payload;
+
 	u_int size_ip;
 	u_int size_tcp;
 	u_int size_payload;
@@ -77,7 +120,7 @@ void callback(u_char *user, const struct pcap_pkthdr *hdr, const u_char *packet)
 		printf("%02x ", ethernet->ether_shost[j]);
 	}
 	printf("\nETHERNET TYPE: %04x", ntohs(ethernet->ether_type));
-	
+
 	//IPv4 헤더정보 출력
 	if(ntohs(ethernet->ether_type) != ETHERTYPE_IP){			/* IP인지 확인 */
 		printf("Not IP\n");
@@ -85,7 +128,7 @@ void callback(u_char *user, const struct pcap_pkthdr *hdr, const u_char *packet)
 	}
 	printf("\nIPv4 HEADER\n============================\n");
 	ip = (struct libnet_ipv4_hdr*)(packet + SIZE_ETHERNET);
-	size_ip = IP_HL(ip)*4;
+	size_ip = ip->ip_hl*4;
 	if (size_ip < 20){
 		printf("	* Invalid IP header length: %u bytes\n", size_ip);
 		return;
@@ -100,7 +143,7 @@ void callback(u_char *user, const struct pcap_pkthdr *hdr, const u_char *packet)
 	}
 	printf("TCP HEADER\n============================\n");
 	tcp = (struct libnet_tcp_hdr*)(packet + SIZE_ETHERNET + size_ip);
-	size_tcp = TH_OFF(tcp)*4;
+	size_tcp = tcp->th_off*4;
 	if (size_tcp < 20) {
 		printf("	* Invalid TCP header length: %u bytes\n", size_tcp);
 		return;
