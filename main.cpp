@@ -7,90 +7,156 @@
 int print_devlist();		/* Print list of available network devices */
 int print_netdev(char* dev);	/* Print Network Device Info */
 void callback(u_char *user, const struct pcap_pkthdr *pkthdr, const u_char *packet);
-void getIPMAC(struct mac_addr* mymac, struct in_addr* myip);
+void print_my_IPMAC(u_int32_t my_ip_addr, struct libnet_ether_addr* my_mac_addr);
 
-int main() {
+int main(int argc, char* argv[]) {
 
-	int fd, j;
-	char *dev;
+	if(argc != 4){
+		printf("syntax: sendarp <interface> <send ip> <target ip>\n");
+		return -1;
+	}
+
+	int fd, bytes_written, j;
 	char errbuf[PCAP_ERRBUF_SIZE];
-	u_int8_t mymac[ETHER_ADDR_LEN];
-	struct in_addr myip;
+	u_int32_t my_ip_addr, send_ip_addr, target_ip_addr;
+	u_int8_t mac_broadcast_addr[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+	u_int8_t mac_zero_addr[6] = {0, 0, 0, 0, 0, 0,};
+	u_int8_t mac_terror_addr[6] = {0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc};
 	struct bpf_program fp;
-	struct libnet_ether_addr *mac_addr;
+	struct libnet_ether_addr* my_mac_addr,*send_mac_addr, *target_mac_addr;
+	struct pcap_pkthdr* header;
+	const struct libnet_ethernet_hdr *ethernet;
+	const struct libnet_arp_hdr *arp;
+	const u_char *packet;
 
 	bpf_u_int32 netp, maskp;
 	pcap_t *handle;
+	libnet_t *l;
+	libnet_ptag_t arp_tag, ether_tag;
 
-	/*libnet_t *l;
-	l=libnet_init(LIBNET_RAW4, NULL, errbuf);
-	mac_addr = libnet_get_hwaddr(l); 
-printf("MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n",\
-        mac_addr->ether_addr_octet[0],\
-        mac_addr->ether_addr_octet[1],\
-        mac_addr->ether_addr_octet[2],\
-        mac_addr->ether_addr_octet[3],\
-        mac_addr->ether_addr_octet[4],\
-        mac_addr->ether_addr_octet[5]);
-	/*getIPMAC(&s_mymac, &myip);
-	mymac = s_mymac.maddr;
+	char *dev = argv[1];	//eth0
+	char *send_ip = argv[2];
+	char *target_ip = argv[3];
 
-	printf("%s\n", inet_ntoa(myip));
-	printf("%d\n", sizeof(mymac));
-	printf("%02x %02x %02x %02x %02x %02x\n", mymac[0], mymac[1], mymac[2], mymac[3], mymac[4], mymac[5]);*/
-	char filter_exp[] = "port 80";	/* *** FILTERING RULE *** */
+	send_ip_addr = libnet_name2addr4(l, send_ip, LIBNET_DONT_RESOLVE);
+	target_ip_addr = libnet_name2addr4(l, target_ip, LIBNET_DONT_RESOLVE);
 
-	if((dev = pcap_lookupdev(errbuf)) == NULL){
-		fprintf(stderr, "%s\n", errbuf);
-		return -1;
-	}
+	send_mac_addr = (struct libnet_ether_addr*)malloc(sizeof(struct libnet_ether_addr));
+	target_mac_addr = (struct libnet_ether_addr*) malloc(sizeof(struct libnet_ether_addr));
+
+	memcpy(target_mac_addr->ether_addr_octet, mac_terror_addr, ETHER_ADDR_LEN);
+
+	char filter_exp[] = "arp";	/* *** FILTERING RULE *** */
+
+	//if((dev = pcap_lookupdev(errbuf)) == NULL){
+	//	fprintf(stderr, "%s\n", errbuf);
+	//	exit(1);
+	//}
 	if((pcap_lookupnet(dev, &netp, &maskp, errbuf)) == -1){
 		fprintf(stderr, "%s\n", errbuf);
-		return -1;
+		exit(1);
 	}
 
 	//if(print_devlist()) 	return -1;
 	//if(print_netdev(dev)) 	return -1;
 	
-	handle = pcap_open_live(dev, BUFSIZ, NONPROM, 1000, errbuf);
+	handle = pcap_open_live(dev, BUFSIZ, PROMISC, 1000, errbuf);
 	if (handle == NULL) {
 		fprintf(stderr, "Couldn't open device %s: %s\n", dev, errbuf);
-		return -1;
+		exit(1);
 	}
 	if (pcap_datalink(handle) != DLT_EN10MB) {
 		fprintf(stderr, "Device %s doesn't provide Ethernet headers - not supported.\n", dev);
-		return -1;
+		exit(1);
 	}
 	if (pcap_compile(handle, &fp, filter_exp, 0, netp) == -1) {
 		fprintf(stderr, "Couldn't parse filter %s: %s\n", filter_exp, pcap_geterr(handle));
-		return -1;
+		exit(1);
 	}
 	if (pcap_setfilter(handle, &fp) == -1) {
 		fprintf(stderr, "Couldn't install filter %s: %s\n", filter_exp, pcap_geterr(handle));
-		return -1;
+		exit(1);
 	}
 	
 	
-	pcap_loop(handle, RPT, callback, NULL);
+////////////////////
+	l = libnet_init(LIBNET_LINK, NULL, errbuf);
+	if(l==NULL){
+		fprintf(stderr, "libnet_init() failed: %s\n", errbuf);
+		exit(1);
+	}
+	//u_int32_t gw_ip_addr = libnet_name2addr4(l, "gateway", LIBNET_RESOLVE);
+	my_ip_addr = libnet_get_ipaddr4(l);
+	my_mac_addr = libnet_get_hwaddr(l); 
+	
+	if( (arp_tag = libnet_autobuild_arp(ARPOP_REQUEST, my_mac_addr->ether_addr_octet, (u_int8_t*)(&my_ip_addr), mac_zero_addr, (u_int8_t*)(&send_ip_addr), l)) == -1 ){
+		fprintf(stderr, "Error building Ethernet header: %s\n", libnet_geterror(l));
+		exit(1);
+	}
 
+	if(( ether_tag = libnet_autobuild_ethernet(mac_broadcast_addr, ETHERTYPE_ARP, l) ) == -1 ){
+		fprintf(stderr, "Error building Ethernet header: %s\n", libnet_geterror(l));
+		exit(1);
+	}
+
+	bytes_written = libnet_write(l);
+	if(bytes_written != -1)
+		printf("%d bytes written.\n", bytes_written);
+	else
+		fprintf(stderr, "Error writing packet: %s\n", libnet_geterror(l));
+
+	//pcap_loop(handle, RPT, callback, NULL);
+
+	while(1){
+		if( pcap_next_ex(handle, &header, &packet) == -1 ){
+			fprintf(stderr, "Error receiving arp	_reply: %s\n", pcap_geterr(handle));
+			exit(1);
+		}
+		arp = (struct libnet_arp_hdr*)(packet + SIZE_ETHERNET);
+		if(ntohs(arp->ar_op) != ARPOP_REPLY)
+			continue;
+		//이더넷 헤더정보 출력
+		ethernet = (struct libnet_ethernet_hdr*)(packet);
+		printf("\nETHERNET HEADER\n============================\n");
+		printf("MAC DST: ");
+		for(j = 0; j < ETHER_ADDR_LEN; j++) {
+			printf("%02x ", ethernet->ether_dhost[j]);
+		}
+		printf("\nMAC SRC: ");
+		for(j = 0; j < ETHER_ADDR_LEN; j++) {
+			printf("%02x ", ethernet->ether_shost[j]);
+		}
+		printf("\n");
+
+		memcpy(send_mac_addr->ether_addr_octet, packet+22, ETHER_ADDR_LEN);
+		for(j = 0; j < ETHER_ADDR_LEN; j++) {
+			printf("%02x ", send_mac_addr->ether_addr_octet[j]);
+		}
+		printf("\n");
+		//printf("\nTarget MAC: %02X:%02X:%02X:%02X:%02X:%02X\n", 
+		break;	
+	}
+
+	if( libnet_build_arp( l->link_type, ETHERTYPE_IP, 6, 4, ARPOP_REPLY, target_mac_addr->ether_addr_octet, (u_int8_t*)target_ip_addr, send_mac_addr->ether_addr_octet, (u_int8_t*)send_ip_addr, NULL, 0, l, arp_tag ) == -1){
+		fprintf(stderr, "Error building Ethernet header: %s\n", libnet_geterror(l));
+		exit(1);
+	}
+	
+	if( libnet_autobuild_ethernet(send_mac_addr->ether_addr_octet, ETHERTYPE_ARP, l) == -1 ){
+		fprintf(stderr, "Error building Ethernet header: %s\n", libnet_geterror(l));
+		exit(1);
+	}
+	libnet_destroy(l);	
+	pcap_close(handle);
 	return 0;
 }
 
-void getIPMAC(u_int8_t* mymac, struct in_addr *myip){
-	
-	int fd;
-	struct ifreq ifr;
-
-	fd = socket(PF_INET, SOCK_DGRAM, 0);
-	ifr.ifr_addr.sa_family = AF_INET;
-	strncpy(ifr.ifr_name, "eth0", IFNAMSIZ-1);
-	ioctl(fd, SIOCGIFADDR, &ifr);
-	*myip = ((struct sockaddr_in*)&ifr.ifr_addr)->sin_addr;
-	ioctl(fd, SIOCGIFHWADDR, &ifr);
-	mymac = (unsigned char*) ifr.ifr_hwaddr.sa_data;
-
-	close(fd);
-
+void print_my_IPMAC(u_int32_t ip_addr, struct libnet_ether_addr* mac_addr){
+	printf("IP address: %s\n", libnet_addr2name4(ip_addr, LIBNET_DONT_RESOLVE));
+	printf("MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n",\
+	mac_addr->ether_addr_octet[0],	mac_addr->ether_addr_octet[1],\
+	mac_addr->ether_addr_octet[2], mac_addr->ether_addr_octet[3],\
+	mac_addr->ether_addr_octet[4], mac_addr->ether_addr_octet[5]);
 }
 
 void callback(u_char *user, const struct pcap_pkthdr *hdr, const u_char *packet){
